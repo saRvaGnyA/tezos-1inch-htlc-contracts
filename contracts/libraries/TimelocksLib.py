@@ -143,6 +143,9 @@ def TimelockLib():
 
             # Destination chain timelocks (resolver's funds) - earlier than source for atomicity
             # FIXED: Calculate destination times relative to source times with proper buffer
+            assert (
+                params.withdrawal_delay > coordination_buffer
+            ), "WITHDRAWAL_DELAY_TOO_SHORT"
             dst_withdrawal_delay = params.withdrawal_delay - coordination_buffer
             dst_withdrawal = sp.add_seconds(
                 params.start_time, dst_withdrawal_delay
@@ -151,7 +154,7 @@ def TimelockLib():
                 dst_withdrawal, sp.to_int(params.public_delay_additional)
             )  # Public withdrawal after destination withdrawal
             dst_cancellation = sp.add_seconds(
-                dst_public_withdrawal, sp.to_int(coordination_buffer)
+                dst_withdrawal, sp.to_int(params.cancellation_delay)
             )  # Cancellation after public withdrawal
             dst_public_cancellation = sp.add_seconds(
                 dst_cancellation, sp.to_int(params.public_delay_additional)
