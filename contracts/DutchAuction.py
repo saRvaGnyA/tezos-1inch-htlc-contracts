@@ -247,16 +247,18 @@ def DutchAuction():
 
             # Get current auction price (calculate without storing)
             auction_params = self.data.auctions[params.auction_id]
+            auction_state = self.data.auction_states[params.auction_id]
             current_price = self.compute_time_based_price(auction_params)
             adjusted_price = self.apply_gas_adjustment(
                 sp.record(base_price=current_price, auction_params=auction_params)
             )
 
-            # Calculate taking amount: (current_price * making_amount) / maker_amount
+            # Calculate taking amount: (current_price * making_amount) / maker_amount - total_filled
             # NOTE: This proportional taking amount based on current auction price
             taking_amount = sp.nat(0)
             taking_amount_result = sp.ediv(
-                adjusted_price * params.making_amount, auction_params.maker_amount
+                adjusted_price * params.making_amount,
+                sp.as_nat(auction_params.maker_amount - auction_state.total_filled),
             )
             if taking_amount_result.is_some():
                 taking_amount = sp.fst(taking_amount_result.unwrap_some())
