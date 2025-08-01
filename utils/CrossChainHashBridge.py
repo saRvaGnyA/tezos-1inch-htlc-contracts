@@ -117,7 +117,7 @@ class CrossChainHashBridge:
         index = struct.unpack(">Q", index_bytes)[0]
 
         # Extract secret hash from remaining 32 bytes
-        secret_hash = universal_leaf[32:]
+        secret_hash = universal_leaf[8:]
 
         return index, secret_hash
 
@@ -194,33 +194,19 @@ class CrossChainHashBridge:
         leaf_hashes = [hasher(leaf) for leaf in leaves]
 
         # Build tree level by level
-        tree_levels = [leaf_hashes]
+        tree_level: List[List[bytes]] = [leaf_hashes]
         current_level = leaf_hashes
 
         while len(current_level) > 1:
-            next_level = []
-
-            # Process pairs of nodes
+            next_level: List[bytes] = []
             for i in range(0, len(current_level), 2):
                 left = current_level[i]
-
-                if i + 1 < len(current_level):
-                    right = current_level[i + 1]
-                else:
-                    # Odd number of nodes - duplicate the last one
-                    right = current_level[i]
-
-                # Hash the pair to create parent node
-                parent = hasher(left + right)
-                next_level.append(parent)
-
-            tree_levels.append(next_level)
+                right = current_level[i + 1] if i + 1 < len(current_level) else left
+                next_level.append(hasher(left + right))
+            tree_level.append(next_level)
             current_level = next_level
 
-        # Root is the single node at the top level
-        root = current_level[0] if current_level else hasher(b"")
-
-        return {"leaves": leaf_hashes, "tree": tree_levels, "root": root}
+        return {"leaves": leaf_hashes, "tree": tree_level, "root": current_level[0]}
 
     # ================================================================
     # PROOF GENERATION AND VALIDATION
@@ -243,14 +229,10 @@ class CrossChainHashBridge:
             raise ValueError("Invalid leaf index")
 
         # Generate EVM proof
-        evm_proof = self._generate_merkle_proof(
-            trees["evm_tree"], leaf_index, self.evm_hasher
-        )
+        evm_proof = self._generate_merkle_proof(trees["evm_tree"], leaf_index)
 
         # Generate Tezos proof
-        tezos_proof = self._generate_merkle_proof(
-            trees["tezos_tree"], leaf_index, self.tezos_hasher
-        )
+        tezos_proof = self._generate_merkle_proof(trees["tezos_tree"], leaf_index)
 
         return {
             "leaf_index": leaf_index,
@@ -269,7 +251,7 @@ class CrossChainHashBridge:
         }
 
     def _generate_merkle_proof(
-        self, tree: Dict[str, Any], leaf_index: int, hasher
+        self, tree: Dict[str, Any], leaf_index: int
     ) -> List[bytes]:
         """
         Generate Merkle proof path for a specific leaf
@@ -277,36 +259,24 @@ class CrossChainHashBridge:
         Args:
             tree: Tree structure from _build_merkle_tree
             leaf_index: Index of the leaf
-            hasher: Hash function used in tree construction
 
         Returns:
             List of sibling hashes forming the proof path
         """
-        proof_path = []
-        current_index = leaf_index
+        proof: List[bytes] = []
+        idx = leaf_index
 
         # Walk up the tree, collecting sibling hashes
-        for level in range(len(tree["tree"]) - 1):  # Exclude root level
-            level_nodes = tree["tree"][level]
+        for level_nodes in tree["tree"][:-1]:  # Skip root
+            sibling_index = idx + 1 if idx % 2 == 0 else idx - 1
+            proof.append(
+                level_nodes[sibling_index]
+                if sibling_index < len(level_nodes)
+                else level_nodes[idx]
+            )
+            idx //= 2  # Move to parent index
 
-            # Determine sibling index
-            if current_index % 2 == 0:  # Left child
-                sibling_index = current_index + 1
-            else:  # Right child
-                sibling_index = current_index - 1
-
-            # Add sibling hash - this must match the duplicate-last-node rule
-            # used in _build_merkle_tree
-            if sibling_index < len(level_nodes):
-                proof_path.append(level_nodes[sibling_index])
-            else:
-                # No sibling (odd number of nodes) - use same as tree building
-                proof_path.append(level_nodes[current_index])
-
-            # Move to parent index
-            current_index = current_index // 2
-
-        return proof_path
+        return proof
 
     def validate_cross_chain_proof(
         self,
@@ -399,20 +369,11 @@ class CrossChainHashBridge:
         if num_parts < 1:
             raise ValueError("Number of parts must be at least 1")
 
-        if base_secret is None:
-            import secrets
+        import secrets as _secrets
 
-            base_secret = secrets.token_bytes(32)
+        base = base_secret or _secrets.token_bytes(32)
 
-        secret_set = []
-
-        # Generate N+1 secrets (one for each part + completion secret)
-        for i in range(num_parts + 1):
-            # Derive secret by hashing base_secret + index
-            derived_secret = self._sha256(base_secret + i.to_bytes(4, "big"))
-            secret_set.append(derived_secret)
-
-        return secret_set
+        return [self._sha256(base + i.to_bytes(4, "big")) for i in range(num_parts + 1)]
 
     def verify_chain_compatibility(self, chain_a: str, chain_b: str) -> Dict[str, Any]:
         """
