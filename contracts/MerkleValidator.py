@@ -140,6 +140,9 @@ def MerkleValidator():
                 assert (
                     current_progress.merkle_root == params.root
                 ), "MERKLE_ROOT_MISMATCH"
+                assert (
+                    current_progress.filled_parts + 1 < current_progress.total_parts
+                ), "ORDER_ALREADY_COMPLETE_OVER_FILL"
 
                 updated_progress = sp.record(
                     total_parts=current_progress.total_parts,
