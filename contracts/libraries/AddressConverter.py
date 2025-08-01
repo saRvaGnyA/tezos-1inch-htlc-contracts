@@ -97,7 +97,7 @@ def AddressConverter():
             addr_packed = sp.pack(tezos_address)
             addr_bytes = sp.cast(addr_packed, t_bytes)
             salty_bytes_cast = sp.cast(self.data.conversion_salt, t_bytes)
-            deterministic_hash = sp.sha256(sp.concat([addr_bytes + salty_bytes_cast]))
+            deterministic_hash = sp.sha256(sp.concat([addr_bytes, salty_bytes_cast]))
 
             # Return full 32-byte hash
             return deterministic_hash
@@ -140,7 +140,7 @@ def AddressConverter():
             addr_packed = sp.pack(params.tezos_address)
             addr_bytes = sp.cast(addr_packed, t_bytes)
             salty_bytes_cast = sp.cast(self.data.conversion_salt, t_bytes)
-            expected_hash = sp.sha256(sp.concat([addr_bytes + salty_bytes_cast]))
+            expected_hash = sp.sha256(sp.concat([addr_bytes, salty_bytes_cast]))
 
             # Verify consistency
             is_valid = expected_hash == params.claimed_evm_hash
@@ -196,7 +196,7 @@ def AddressConverter():
             salt_bytes = self.data.conversion_salt
             addr_bytes = sp.cast(addr_packed, t_bytes)
             salty_bytes_cast = sp.cast(salt_bytes, t_bytes)
-            expected_hash = sp.sha256(sp.concat([addr_bytes + salty_bytes_cast]))
+            expected_hash = sp.sha256(sp.concat([addr_bytes, salty_bytes_cast]))
             assert expected_hash == params.evm_hash, "INVALID_MAPPING"
 
             # Detect address type from address
@@ -350,7 +350,7 @@ if "main" in __name__:
         salt = sp.bytes("0x31696e63685f63726f73735f636861696e5f7631")  # Hex encoded
         addr_bytes = sp.cast(user1_packed, sp.bytes)
         salty_bytes_cast = sp.cast(salt, sp.bytes)
-        expected_hash = sp.sha256(sp.concat([addr_bytes + salty_bytes_cast]))
+        expected_hash = sp.sha256(sp.concat([addr_bytes, salty_bytes_cast]))
 
         scenario.p("Storing verified address mapping")
 
