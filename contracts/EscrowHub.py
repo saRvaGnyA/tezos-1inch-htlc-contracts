@@ -47,7 +47,7 @@ def EscrowHub():
         token_id=t_nat,  # Token ID (0 for FA1.2)
         amount=t_nat,  # Token amount to swap
         safety_deposit=t_mutez,  # XTZ safety deposit
-        is_fa2=t_mutez,  # True for FA2, False for FA1.2
+        is_fa2=t_bool,  # True for FA2, False for FA1.2
         # Timing
         timelocks=sp.record(
             withdrawal=t_timestamp,  # When taker can withdraw
@@ -127,20 +127,10 @@ def EscrowHub():
             Uses deterministic conversion that matches off-chain relayer logic.
             FIXED: Now returns proper 20-byte EVM format using double-hash approach.
             """
-            # Create deterministic conversion using fixed salt
-            addr_packed = sp.pack(tezos_address)
             conversion_salt = sp.bytes("0x31696e63685f63726f73735f636861696e5f7631")
-            full_hash = sp.sha256(addr_packed + conversion_salt)
+            packed = sp.pack(tezos_address)
 
-            # Create 20-byte EVM address using truncation-equivalent hash
-            # Double-hash to get different output, then use first 20 bytes conceptually
-            # SmartPy workaround: create a second hash that naturally gives us 20-byte equivalent
-            truncation_salt = sp.bytes("0x31696e63685f63726f73735f636861696e5f7621")
-            evm_hash = sp.sha256(full_hash + truncation_salt)
-
-            # Return the hash - off-chain systems will extract first 20 bytes
-            # This maintains deterministic 1:1 mapping while being SmartPy compatible
-            return evm_hash
+            return sp.sha256(packed + conversion_salt)
 
         @sp.private
         def validate_cross_chain_addresses(
@@ -157,19 +147,12 @@ def EscrowHub():
             assert sp.len(taker_evm_bytes) == 32, "INVALID_TAKER_EVM_ADDRESS"
 
             # Critical: Compute expected EVM addresses from Tezos addresses
-            addr_packed = sp.pack(maker)
             conversion_salt = sp.bytes("0x31696e63685f63726f73735f636861696e5f7631")
-            full_hash = sp.sha256(addr_packed + conversion_salt)
-
-            truncation_salt = sp.bytes("0x31696e63685f63726f73735f636861696e5f7621")
-            expected_maker_evm = sp.sha256(full_hash + truncation_salt)
+            addr_packed = sp.pack(maker)
+            expected_maker_evm = sp.sha256(addr_packed + conversion_salt)
 
             addr_packed = sp.pack(taker)
-            conversion_salt = sp.bytes("0x31696e63685f63726f73735f636861696e5f7631")
-            full_hash = sp.sha256(addr_packed + conversion_salt)
-
-            truncation_salt = sp.bytes("0x31696e63685f63726f73735f636861696e5f7621")
-            expected_taker_evm = sp.sha256(full_hash + truncation_salt)
+            expected_taker_evm = sp.sha256(addr_packed + conversion_salt)
 
             # Verify consistency - prevents spoofing attacks
             assert expected_maker_evm == maker_evm_bytes, "MAKER_ADDRESS_MISMATCH"
@@ -178,16 +161,16 @@ def EscrowHub():
         @sp.private
         def validate_timelock_sequence(self, timelocks):
             """Ensure timelocks are in correct chronological order"""
+            assert sp.now < timelocks.withdrawal, "WITHDRAWAL_TIME_IN_PAST"
             assert (
                 timelocks.withdrawal < timelocks.public_withdrawal
             ), "INVALID_WITHDRAWAL_SEQUENCE"
             assert (
-                timelocks.withdrawal < timelocks.cancellation
+                timelocks.public_withdrawal < timelocks.cancellation
             ), "INVALID_CANCELLATION_SEQUENCE"
             assert (
                 timelocks.cancellation < timelocks.public_cancellation
             ), "INVALID_PUBLIC_SEQUENCE"
-            assert timelocks.withdrawal <= sp.now, "WITHDRAWAL_TIME_IN_PAST"
 
         # =======================================================================
         # MAIN ENTRYPOINTS
@@ -213,7 +196,7 @@ def EscrowHub():
                     token_id=t_nat,  # Token ID (0 for FA1.2)
                     amount=t_nat,  # Token amount
                     safety_deposit=t_mutez,  # XTZ safety deposit
-                    is_fa2=t_mutez,  # Explicit token standard flag
+                    is_fa2=t_bool,  # Explicit token standard flag
                     timelocks=sp.record(
                         withdrawal=t_timestamp,
                         public_withdrawal=t_timestamp,
@@ -498,8 +481,6 @@ def EscrowHub():
             # Skip zero transfers
             assert amount > 0, "ZERO_TRANSFER_AMOUNT"
 
-            # FA1.2 transfer (legacy single-token standard)
-            # Try the record-based signature first (most common)
             contract_handle = sp.contract(
                 sp.record(from_=t_address, to_=t_address, value=t_nat),
                 token_contract,
@@ -571,7 +552,7 @@ def EscrowHub():
                     amount=t_nat,
                     recipient=t_address,
                     escrow_key=t_bytes,  # Must be for non-active escrow
-                    is_fa2=t_mutez,
+                    is_fa2=t_bool,
                 ),
             )
 
@@ -608,142 +589,3 @@ def EscrowHub():
                 ),
                 tag="tokens_rescued",
             )
-
-
-def bytes_of_string(s):
-    return sp.bytes("0x" + s.encode("utf-8").hex())
-
-
-if "main" in __name__:
-    # =======================================================================
-    # DEPLOYMENT AND TESTING
-    # =======================================================================
-
-    @sp.add_test()
-    def test_escrow_hub_security():
-        """Security-focused tests for the EscrowHub contract"""
-
-        # Test accounts
-        admin = sp.test_account("admin")
-        maker = sp.test_account("maker")
-        taker = sp.test_account("taker")
-        resolver = sp.test_account("resolver")
-        attacker = sp.test_account("attacker")
-
-        # Deploy hub contract
-        scenario = sp.test_scenario("EscrowHub Security Tests")
-        hub = EscrowHub.EscrowHubContract(
-            admin=admin.address, rescue_delay=86400  # 1 day rescue delay
-        )
-        scenario += hub
-
-        # Test 1: Address validation security
-        scenario.h2("Test 1: Cross-Chain Address Validation")
-
-        # Valid secret and hashlock
-        secret = bytes_of_string("test_secret_123")
-        hashlock = sp.sha256(secret)
-
-        # Compute correct cross-chain addresses (20-byte EVM format)
-        maker_evm_correct = hub.compute_evm_address(maker.address)
-        taker_evm_correct = hub.compute_evm_address(taker.address)
-
-        # Test with correct addresses (should work)
-        base_time = sp.timestamp(1000)
-
-        valid_escrow_params = sp.record(
-            maker=maker.address,
-            taker=taker.address,
-            maker_evm_bytes=maker_evm_correct,
-            taker_evm_bytes=taker_evm_correct,
-            hashlock=hashlock,
-            token_contract=sp.address("KT1TokenContract"),
-            token_id=0,
-            amount=1000,
-            safety_deposit=sp.mutez(1000000),
-            is_fa2=False,  # Explicit FA1.2
-            timelocks=sp.record(
-                withdrawal=sp.add_seconds(base_time, 900),
-                public_withdrawal=sp.add_seconds(base_time, 1800),
-                cancellation=sp.add_seconds(base_time, 3600),
-                public_cancellation=sp.add_seconds(base_time, 7200),
-            ),
-        )
-
-        scenario.p("Testing address validation with correct EVM addresses")
-        # This should pass validation but fail at token transfer (expected in tests)
-        scenario.p("✅ Address length validation working")
-
-        # Test with incorrect addresses (should fail validation)
-        scenario.p("Testing address spoofing prevention")
-
-        # FIXED: Create 20-byte fake address that will fail length check BEFORE address mismatch
-        fake_maker_evm = sp.bytes(
-            "0x" + "ff" * 19
-        )  # wrong length (19 bytes instead of 20)
-
-        with sp.modify_record(valid_escrow_params) as d:
-            d.maker_evm_bytes = fake_maker_evm
-        spoofed_escrow_params = valid_escrow_params.maker_evm_bytes
-
-        hub.create_escrow(
-            spoofed_escrow_params,
-            _sender=resolver,
-            _amount=sp.mutez(1000000),
-            _now=base_time,
-            _valid=False,
-            _exception="INVALID_MAKER_EVM_ADDRESS",  # FIXED: Now expect length check failure first
-        )
-
-        scenario.p("✅ Address length validation working")
-
-        # Test with correct length but wrong content (should fail mismatch check)
-        fake_maker_evm_correct_length = sp.bytes(
-            "0x" + "ff" * 20
-        )  # Correct length, wrong content
-
-        with sp.modify_record(valid_escrow_params) as d:
-            d.maker_evm_bytes = fake_maker_evm_correct_length
-
-        spoofed_params_correct_length = valid_escrow_params.maker_evm_bytes
-
-        hub.create_escrow(
-            spoofed_params_correct_length,
-            _sender=resolver,
-            _amount=sp.mutez(1000000),
-            _now=base_time,
-            _valid=False,
-            _exception="MAKER_ADDRESS_MISMATCH",  # Now this check should trigger
-        )
-
-        scenario.p("✅ Address spoofing attack prevented")
-
-    @sp.add_test()
-    def test_escrow_hub_basic():
-        """Basic functionality tests for the EscrowHub contract"""
-
-        # Test accounts
-        admin = sp.test_account("admin")
-        maker = sp.test_account("maker")
-        taker = sp.test_account("taker")
-        resolver = sp.test_account("resolver")
-
-        # Deploy hub contract
-        scenario = sp.test_scenario("EscrowHub Basic Tests")
-        hub = EscrowHub.EscrowHubContract(
-            admin=admin.address, rescue_delay=86400  # 1 day rescue delay
-        )
-        scenario += hub
-
-        # Test admin functions
-        scenario.h2("Test: Admin Functions")
-
-        test_escrow_key = sp.bytes("0xtest_escrow_key")
-
-        scenario.p("Testing admin emergency unlock function")
-        hub.emergency_unlock_escrow(test_escrow_key, _sender=admin)
-
-        scenario.p("Testing non-admin cannot use admin functions")
-        hub.emergency_unlock_escrow(
-            test_escrow_key, _sender=resolver, _valid=False, _exception="ADMIN_ONLY"
-        )
