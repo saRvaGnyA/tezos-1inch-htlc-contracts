@@ -63,6 +63,22 @@ def EscrowHub():
         ),
     )
 
+    contract_storage_type: type = sp.record(
+        # Admin and Configuration
+        admin=t_address,  # Admin address for emergency functions
+        rescue_delay=t_nat,  # Delay in seconds before rescue functions become available
+        # Main Storage
+        escrows=sp.big_map[t_bytes, escrow_record_type],  # Escrow records
+        # Accounting
+        token_balances=sp.big_map[
+            sp.pair[t_address, t_nat], t_nat
+        ],  # Token balances by contract and ID
+        # Security: Per-escrow locking (NOT global)
+        escrow_locks=sp.big_map[t_bytes, t_bool],  # Per-escrow locks
+        # Utilities
+        escrow_counter=t_nat,  # Simple counter instead of tickets
+    )
+
     class EscrowHubContract(sp.Contract):
         """
         Secure Cross-Chain Escrow Hub Contract
@@ -79,24 +95,36 @@ def EscrowHub():
                 admin: Admin address for emergency functions
                 rescue_delay: Delay in seconds before rescue functions become available
             """
-            self.data = sp.record(
-                # Admin and Configuration
-                admin=admin,
-                rescue_delay=rescue_delay,
-                # Main Storage
-                escrows=sp.cast(
-                    sp.big_map(),
-                    sp.big_map[t_bytes, escrow_record_type],
-                ),
-                # Accounting
-                token_balances=sp.cast(
-                    sp.big_map(), sp.big_map[sp.pair[t_address, t_nat], t_nat]
-                ),
-                # Security: Per-escrow locking (NOT global)
-                escrow_locks=sp.cast(sp.big_map(), sp.big_map[t_bytes, t_bool]),
-                # Utilities
-                escrow_counter=sp.nat(0),  # Simple counter instead of tickets
-            )
+
+            sp.cast(admin, t_address)
+
+            self.data.admin = admin
+            self.data.rescue_delay = rescue_delay
+            self.data.escrows = sp.big_map()
+            self.data.token_balances = sp.big_map()
+            self.data.escrow_locks = sp.big_map()
+            self.data.escrow_counter = 0
+
+            sp.cast(self.data, contract_storage_type)
+
+            # self.data = sp.record(
+            #     # Admin and Configuration
+            #     admin=admin,
+            #     rescue_delay=rescue_delay,
+            #     # Main Storage
+            #     escrows=sp.cast(
+            #         sp.big_map(),
+            #         sp.big_map[t_bytes, escrow_record_type],
+            #     ),
+            #     # Accounting
+            #     token_balances=sp.cast(
+            #         sp.big_map(), sp.big_map[sp.pair[t_address, t_nat], t_nat]
+            #     ),
+            #     # Security: Per-escrow locking (NOT global)
+            #     escrow_locks=sp.cast(sp.big_map(), sp.big_map[t_bytes, t_bool]),
+            #     # Utilities
+            #     escrow_counter=sp.nat(0),  # Simple counter instead of tickets
+            # )
 
         # =======================================================================
         # SECURITY UTILITIES (FIXED: Proper class-level indentation)
@@ -127,6 +155,8 @@ def EscrowHub():
             Uses deterministic conversion that matches off-chain relayer logic.
             FIXED: Now returns proper 20-byte EVM format using double-hash approach.
             """
+
+            sp.cast(tezos_address, t_address)
             conversion_salt = sp.bytes("0x31696e63685f63726f73735f636861696e5f7631")
             packed = sp.pack(tezos_address)
 
@@ -563,7 +593,8 @@ def EscrowHub():
 
             # Can only rescue after rescue delay AND escrow is not active
             rescue_time = sp.add_seconds(
-                escrow_data.timelocks.public_cancellation, self.data.rescue_delay
+                escrow_data.timelocks.public_cancellation,
+                sp.to_int(self.data.rescue_delay),
             )
             assert sp.now >= rescue_time, "RESCUE_DELAY_NOT_EXPIRED"
             assert not escrow_data.status.is_variant.active(), "ESCROW_STILL_ACTIVE"
