@@ -296,7 +296,7 @@ def DutchAuction():
 
             # Validate fill
             assert auction_state.is_active, "AUCTION_NOT_ACTIVE"
-            assert params.filled_amount <= 0, "ZERO_FILL_AMOUNT"
+            assert params.filled_amount > 0, "ZERO_FILL_AMOUNT"
 
             # Check for auction completion
             new_total_filled = auction_state.total_filled + params.filled_amount
